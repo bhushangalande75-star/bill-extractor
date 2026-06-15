@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BillExtractor — PDF Bill to Excel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ===== hero ===== -->
+  <section class="hero">
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/>
+          <path d="M9 13h6M9 17h6M9 9h1"/>
+        </svg>
+      </div>
+      <div>
+        <h1>BillExtractor</h1>
+        <small>PVC STATEMENT SUITE</small>
+      </div>
+    </div>
+
+    <span class="pill"><span class="dot"></span> Live Platform</span>
+    <h2>Smarter Bill<br>Extraction</h2>
+    <p>Upload your CR/BSL civil bill PDFs and pull a clean, bill-wise
+       statement in Excel — schedule-wise, item-wise, with figures read
+       straight from the bill tables. No manual typing of amounts.</p>
+  </section>
+
+  <!-- ===== action card ===== -->
+  <section class="card">
+    <h3>Build a statement</h3>
+    <p class="sub">Upload bills, then choose what to extract</p>
+
+    <!-- step 1: upload -->
+    <div id="step-upload">
+      <label class="drop" id="drop">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 16V4M7 9l5-5 5 5"/><path d="M5 20h14"/>
+        </svg>
+        <b>Drop bill PDFs here</b>
+        <span>or click to choose — one PDF per bill (B1…B10)</span>
+        <input type="file" id="files" accept="application/pdf" multiple>
+      </label>
+      <div id="filelist" class="chips"></div>
+      <button class="btn" id="analyzeBtn" disabled>Analyze bills</button>
+    </div>
+
+    <!-- step 2: filter (revealed after analyze) -->
+    <div id="step-filter" class="hide">
+      <div class="chips" id="billchips"></div>
+
+      <div class="section">
+        <label class="h">Value column to extract</label>
+        <select id="valueCol"></select>
+      </div>
+
+      <div class="section">
+        <label class="h">Schedules <span style="font-weight:400;color:var(--muted)">(none selected = all)</span></label>
+        <div class="chips" id="schedchips"></div>
+      </div>
+
+      <div class="section">
+        <label class="h">Item numbers</label>
+        <div class="toolbar">
+          <input type="text" id="itemSearch" placeholder="Search item…">
+          <button class="linkbtn" id="selAll">Select all</button>
+          <button class="linkbtn" id="selNone">Clear</button>
+        </div>
+        <div class="checks" id="itemchecks"></div>
+      </div>
+
+      <button class="btn" id="genBtn">Generate Excel statement</button>
+      <button class="btn ghost" id="resetBtn">Upload different bills</button>
+    </div>
+
+    <div id="err" class="err hide"></div>
+    <p class="note">Tip: a “preset” is just your saved selection — value column +
+       item list. Re-use it next quarter by picking the same items.</p>
+  </section>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let TOKEN = null, CA = null, ITEMS = [];
+
+const filesInput = $("#files"), drop = $("#drop");
+const analyzeBtn = $("#analyzeBtn"), genBtn = $("#genBtn");
+
+function showErr(m){ const e=$("#err"); e.textContent=m; e.classList.remove("hide"); }
+function clrErr(){ $("#err").classList.add("hide"); }
+
+["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("over");}));
+["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("over");}));
+drop.addEventListener("drop",e=>{ filesInput.files=e.dataTransfer.files; renderFiles(); });
+filesInput.addEventListener("change", renderFiles);
+
+function renderFiles(){
+  const fl=$("#filelist"); fl.innerHTML="";
+  [...filesInput.files].forEach(f=>{
+    const c=document.createElement("span"); c.className="chip"; c.textContent=f.name; fl.appendChild(c);
+  });
+  analyzeBtn.disabled = filesInput.files.length===0;
+}
+
+analyzeBtn.addEventListener("click", async ()=>{
+  clrErr();
+  analyzeBtn.disabled=true; analyzeBtn.innerHTML='<span class="spinner"></span>Reading bills…';
+  const fd=new FormData();
+  [...filesInput.files].forEach(f=>fd.append("pdfs",f));
+  try{
+    const res=await fetch("/analyze",{method:"POST",body:fd});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||"Analyze failed");
+    buildFilter(data);
+  }catch(e){ showErr(e.message); }
+  analyzeBtn.disabled=false; analyzeBtn.textContent="Analyze bills";
+});
+
+function buildFilter(d){
+  TOKEN=d.token; CA=d.ca_no; ITEMS=d.items;
+  $("#step-upload").classList.add("hide");
+  $("#step-filter").classList.remove("hide");
+
+  const bc=$("#billchips"); bc.innerHTML="";
+  d.bills.forEach(b=>{ const c=document.createElement("span"); c.className="chip";
+    c.textContent=`${b.bill_no} · ${b.file}`; bc.appendChild(c); });
+
+  const vc=$("#valueCol"); vc.innerHTML="";
+  d.value_columns.forEach(v=>{ const o=document.createElement("option"); o.value=v; o.textContent=v;
+    if(v.includes("including special condition")) o.selected=true; vc.appendChild(o); });
+
+  const sc=$("#schedchips"); sc.innerHTML="";
+  d.schedules.forEach(s=>{
+    const id="sch_"+s;
+    const l=document.createElement("label"); l.className="chip"; l.style.cursor="pointer";
+    l.innerHTML=`<input type="checkbox" value="${s}" id="${id}" style="accent-color:var(--teal);margin-right:6px"> SCH-${s}`;
+    sc.appendChild(l);
+  });
+
+  renderItems("");
+}
+
+function renderItems(q){
+  const box=$("#itemchecks"); box.innerHTML="";
+  ITEMS.filter(it=> it.item.includes(q) || (it.description||"").toLowerCase().includes(q.toLowerCase()))
+    .forEach(it=>{
+      const r=document.createElement("label"); r.className="row";
+      r.innerHTML=`<input type="checkbox" value="${it.item}">
+        <span><b>${it.item}</b> <span class="desc">${it.description||""}</span></span>
+        <span class="scd">${it.schedules.join(", ")}</span>`;
+      box.appendChild(r);
+    });
+}
+$("#itemSearch").addEventListener("input",e=>renderItems(e.target.value));
+$("#selAll").addEventListener("click",()=>$("#itemchecks").querySelectorAll("input").forEach(c=>c.checked=true));
+$("#selNone").addEventListener("click",()=>$("#itemchecks").querySelectorAll("input").forEach(c=>c.checked=false));
+
+$("#resetBtn").addEventListener("click",()=>{
+  $("#step-filter").classList.add("hide"); $("#step-upload").classList.remove("hide");
+  filesInput.value=""; renderFiles(); clrErr();
+});
+
+genBtn.addEventListener("click", async ()=>{
+  clrErr();
+  const items=[...$("#itemchecks").querySelectorAll("input:checked")].map(c=>c.value);
+  if(items.length===0){ showErr("Select at least one item number."); return; }
+  const schedules=[...$("#schedchips").querySelectorAll("input:checked")].map(c=>c.value);
+  genBtn.disabled=true; genBtn.innerHTML='<span class="spinner"></span>Building…';
+  try{
+    const res=await fetch("/generate",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({token:TOKEN, ca_no:CA, value_column:$("#valueCol").value, items, schedules})});
+    if(!res.ok){ const e=await res.json(); throw new Error(e.error||"Generate failed"); }
+    const blob=await res.blob();
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+    a.download="bill_wise_statement.xlsx"; a.click(); URL.revokeObjectURL(a.href);
+  }catch(e){ showErr(e.message); }
+  genBtn.disabled=false; genBtn.textContent="Generate Excel statement";
+});
+</script>
+</body>
+</html>
