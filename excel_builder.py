@@ -150,3 +150,183 @@ def build_workbook(parsed_bills, config):
     wb.save(buf)
     buf.seek(0)
     return buf
+
+
+# ----------------------------------------------------------------------------
+# Multi-sheet preset workbooks
+# ----------------------------------------------------------------------------
+from openpyxl.utils import get_column_letter
+
+
+def _hdr_cell(ws, r, c, text, fill=TEAL, color=WHITE):
+    cell = ws.cell(r, c, text)
+    cell.font = Font(bold=True, color=color)
+    cell.fill = PatternFill("solid", fgColor=fill)
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    cell.border = BORDER
+    return cell
+
+
+def _build_lookup(parsed_bills, value_col):
+    """Return (lookup, present_pairs, bill_labels)."""
+    bills = sorted(parsed_bills, key=_bill_sort_key)
+    labels = [b.get("bill_no") or f"B{i+1}" for i, b in enumerate(bills)]
+    lookup, present = {}, set()
+    for b, label in zip(bills, labels):
+        for row in b["rows"]:
+            key = (row["schedule"], row["item"])
+            present.add(key)
+            v = row["values"].get(value_col)
+            if v is not None:
+                lookup.setdefault(key, {})
+                lookup[key][label] = lookup[key].get(label, 0.0) + v
+    return lookup, present, labels
+
+
+def _row_plan(select, present):
+    """Return ordered list of (schedule, item) pairs to print."""
+    pairs = []
+    if select["mode"] == "items":
+        items = list(dict.fromkeys(select["items"]))
+        scheds = sorted({s for (s, _it) in present})
+        for s in scheds:
+            for it in items:
+                if (s, it) in present:
+                    pairs.append((s, it))
+    else:  # map: explicit schedule -> items, always shown
+        for s, items in select["map"].items():
+            for it in items:
+                pairs.append((s, it))
+    return pairs
+
+
+def _write_statement_sheet(ws, spec, lookup, labels, value_col):
+    layout = spec.get("layout", "combined")
+    total = spec.get("total", False)
+    pairs = _row_plan(spec["select"], set(lookup) | _all_present)
+
+    # header
+    ws.cell(1, 1, f"Value: {value_col}").font = Font(italic=True, size=9, color="555555")
+    if layout == "separate":
+        headers = ["SN", "Sch", "Item No"] + labels + (["Total"] if total else [])
+        key_cols = 3
+    else:
+        headers = ["SN", "Sch & Item No"] + labels + (["Total"] if total else [])
+        key_cols = 2
+    hr = 2
+    for c, h in enumerate(headers, start=1):
+        _hdr_cell(ws, hr, c, h)
+
+    r = hr + 1
+    col_tot = {lab: 0.0 for lab in labels}
+    sn = 0
+    for (s, it) in pairs:
+        sn += 1
+        ws.cell(r, 1, sn).border = BORDER
+        if layout == "separate":
+            ws.cell(r, 2, s).border = BORDER
+            ws.cell(r, 3, it).border = BORDER
+        else:
+            ws.cell(r, 2, f"{s}-{it}").border = BORDER
+        row_tot = 0.0
+        first_bill_col = key_cols + 1
+        for i, lab in enumerate(labels):
+            v = lookup.get((s, it), {}).get(lab)
+            v = 0.0 if v is None else v
+            cell = ws.cell(r, first_bill_col + i, round(v, 2))
+            cell.border = BORDER
+            cell.alignment = Alignment(horizontal="right")
+            row_tot += v
+            col_tot[lab] += v
+        if total:
+            tc = ws.cell(r, first_bill_col + len(labels), round(row_tot, 2))
+            tc.border = BORDER
+            tc.font = Font(bold=True)
+            tc.alignment = Alignment(horizontal="right")
+        r += 1
+
+    # total row
+    _hdr_cell(ws, r, key_cols, "TOTAL", fill=TEAL_DARK)
+    for c in range(1, key_cols):
+        ws.cell(r, c).fill = PatternFill("solid", fgColor=TEAL_DARK)
+        ws.cell(r, c).border = BORDER
+    grand = 0.0
+    fb = key_cols + 1
+    for i, lab in enumerate(labels):
+        cell = ws.cell(r, fb + i, round(col_tot[lab], 2))
+        cell.font = Font(bold=True, color=WHITE)
+        cell.fill = PatternFill("solid", fgColor=TEAL_DARK)
+        cell.alignment = Alignment(horizontal="right")
+        grand += col_tot[lab]
+    if total:
+        gc = ws.cell(r, fb + len(labels), round(grand, 2))
+        gc.font = Font(bold=True, color=WHITE)
+        gc.fill = PatternFill("solid", fgColor=TEAL_DARK)
+        gc.alignment = Alignment(horizontal="right")
+
+    # widths
+    ws.column_dimensions["A"].width = 5
+    for c in range(2, key_cols + 1):
+        ws.column_dimensions[get_column_letter(c)].width = 12 if layout == "separate" else 16
+    end = key_cols + len(labels) + (1 if total else 0)
+    for c in range(key_cols + 1, end + 1):
+        ws.column_dimensions[get_column_letter(c)].width = 13
+    ws.freeze_panes = ws.cell(hr + 1, key_cols + 1).coordinate
+
+
+def _write_bill_summary(ws, parsed_bills):
+    bills = sorted(parsed_bills, key=_bill_sort_key)
+    headers = ["Bill No", "Measurement Start", "Measurement Complete", "Bill Amount (incl GST)"]
+    for c, h in enumerate(headers, start=1):
+        _hdr_cell(ws, 1, c, h)
+    r = 2
+    total = 0.0
+    for b in bills:
+        ws.cell(r, 1, b.get("bill_no") or "").border = BORDER
+        ws.cell(r, 2, b.get("meas_from") or "").border = BORDER
+        ws.cell(r, 3, b.get("meas_to") or "").border = BORDER
+        amt = b.get("bill_amount")
+        cell = ws.cell(r, 4, round(amt, 2) if amt is not None else "")
+        cell.border = BORDER
+        cell.alignment = Alignment(horizontal="right")
+        if amt:
+            total += amt
+        r += 1
+    _hdr_cell(ws, r, 1, "TOTAL", fill=TEAL_DARK)
+    for c in (2, 3):
+        ws.cell(r, c).fill = PatternFill("solid", fgColor=TEAL_DARK)
+        ws.cell(r, c).border = BORDER
+    tc = ws.cell(r, 4, round(total, 2))
+    tc.font = Font(bold=True, color=WHITE)
+    tc.fill = PatternFill("solid", fgColor=TEAL_DARK)
+    tc.alignment = Alignment(horizontal="right")
+    for col, w in zip("ABCD", (10, 20, 20, 22)):
+        ws.column_dimensions[col].width = w
+
+
+# module-level holder so _write_statement_sheet can see all present pairs
+_all_present = set()
+
+
+def build_preset_workbook(parsed_bills, preset):
+    """Build a multi-sheet workbook from a preset spec."""
+    global _all_present
+    wb = Workbook()
+    wb.remove(wb.active)
+    default_val = "Amount Since last Bill including special condition"
+
+    for spec in preset["sheets"]:
+        title = spec["title"][:31]  # Excel sheet-name limit
+        ws = wb.create_sheet(title=title)
+        if spec["type"] == "bill_summary":
+            _write_bill_summary(ws, parsed_bills)
+        else:
+            value_col = spec.get("value_column") or default_val
+            lookup, present, labels = _build_lookup(parsed_bills, value_col)
+            _all_present = present
+            _write_statement_sheet(ws, spec, lookup, labels, value_col)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf

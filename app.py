@@ -23,7 +23,8 @@ from werkzeug.utils import secure_filename
 from werkzeug.exceptions import HTTPException
 
 from extractor import summarize, extract_rows
-from excel_builder import build_workbook
+from excel_builder import build_workbook, build_preset_workbook
+from presets import list_presets, get_preset
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 40 * 1024 * 1024   # 40 MB per request
@@ -118,6 +119,32 @@ def generate():
         buf,
         as_attachment=True,
         download_name="bill_wise_statement.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.route("/presets")
+def presets():
+    return jsonify({"presets": list_presets()})
+
+
+@app.route("/generate_preset", methods=["POST"])
+def generate_preset():
+    payload = request.get_json(silent=True) or {}
+    session = SESSIONS.get(payload.get("token"))
+    if not session:
+        return jsonify({"error": "Session expired. Please re-upload the PDFs."}), 400
+    preset = get_preset(payload.get("preset_id"))
+    if not preset:
+        return jsonify({"error": "Unknown preset."}), 400
+    try:
+        buf = build_preset_workbook(session["parsed"], preset)
+    except Exception as e:
+        return jsonify({"error": f"Failed to build the workbook: {e}"}), 500
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name="bill_statement_full.xlsx",
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 

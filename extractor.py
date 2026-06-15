@@ -28,6 +28,8 @@ TABLE_SETTINGS = {"vertical_strategy": "lines", "horizontal_strategy": "lines"}
 _SCHED_RE = re.compile(r"Schedule\s+(\d{2,3})\b")
 _BILLNO_RE = re.compile(r"/(B\d+)\b")
 _CA_RE = re.compile(r"(CR/[A-Z]+/[A-Za-z]+/\d{4}/\d{3,4})")
+_DATE = r"(\d{2}/\d{2}/\d{4})"
+_AMT_RE = re.compile(r"Bill Amount \(Rs\.\) \(Including Tax \(GST\)\)\s+([\d.]+)")
 
 
 def _norm_item(raw):
@@ -62,12 +64,33 @@ def _is_schedule_header(joined):
 
 
 def _read_meta(pdf):
-    """Return (bill_no, ca_no) from the first page text."""
+    """Return bill metadata from the first page (+ bill amount near the end)."""
     text = pdf.pages[0].extract_text() or ""
+
+    def find(pat):
+        m = re.search(pat, text)
+        return m.group(1) if m else None
+
     bill = _BILLNO_RE.search(text)
     ca = _CA_RE.search(text)
-    return (bill.group(1) if bill else None,
-            ca.group(1) if ca else None)
+    meta = {
+        "bill_no": bill.group(1) if bill else None,
+        "ca_no": ca.group(1) if ca else None,
+        "meas_from": find(r"Measurement Date From\s+" + _DATE),
+        "meas_to": find(r"Measurement Date To\s+" + _DATE),
+        "bill_date": find(r"Bill Date\s+" + _DATE),
+        "bill_amount": None,
+    }
+    # the GST-inclusive bill amount sits in the summary near the end
+    for page in reversed(pdf.pages):
+        m = _AMT_RE.search(page.extract_text() or "")
+        if m:
+            try:
+                meta["bill_amount"] = float(m.group(1))
+            except ValueError:
+                pass
+            break
+    return meta
 
 
 def extract_rows(filepath):
@@ -86,7 +109,7 @@ def extract_rows(filepath):
     last_item_row = None  # to attach the description sub-row that follows an item
 
     with pdfplumber.open(filepath) as pdf:
-        bill_no, ca_no = _read_meta(pdf)
+        meta = _read_meta(pdf)
         for page in pdf.pages:
             for table in page.extract_tables(table_settings=TABLE_SETTINGS):
                 for r in table:
@@ -126,7 +149,9 @@ def extract_rows(filepath):
                             if not last_item_row["description"]:
                                 last_item_row["description"] = desc.replace("\n", " ").strip()
 
-    return {"bill_no": bill_no, "ca_no": ca_no, "rows": rows}
+    result = dict(meta)
+    result["rows"] = rows
+    return result
 
 
 def summarize(parsed_bills):

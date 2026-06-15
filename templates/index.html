@@ -56,6 +56,13 @@
     <div id="step-filter" class="hide">
       <div class="chips" id="billchips"></div>
 
+      <div class="section" id="presetBox">
+        <label class="h">Full preset workbook <span style="font-weight:400;color:var(--muted)">(all sheets in one file)</span></label>
+        <select id="presetSel"></select>
+        <button class="btn" id="genPresetBtn" style="margin-top:10px">Generate full workbook</button>
+        <div style="text-align:center;color:var(--muted);font-size:12px;margin:16px 0 2px">— or build a single custom sheet —</div>
+      </div>
+
       <div class="section">
         <label class="h">Value column to extract</label>
         <select id="valueCol"></select>
@@ -128,6 +135,16 @@ function buildFilter(d){
   $("#step-upload").classList.add("hide");
   $("#step-filter").classList.remove("hide");
 
+  // presets
+  fetch("/presets").then(r=>r.json()).then(p=>{
+    const ps=$("#presetSel"); ps.innerHTML="";
+    (p.presets||[]).forEach(x=>{
+      const o=document.createElement("option"); o.value=x.id;
+      o.textContent=`${x.name} (${x.sheets} sheets)`; ps.appendChild(o);
+    });
+    if(!(p.presets||[]).length) $("#presetBox").classList.add("hide");
+  }).catch(()=>$("#presetBox").classList.add("hide"));
+
   const bc=$("#billchips"); bc.innerHTML="";
   d.bills.forEach(b=>{ const c=document.createElement("span"); c.className="chip";
     c.textContent=`${b.bill_no} · ${b.file}`; bc.appendChild(c); });
@@ -165,6 +182,21 @@ $("#selNone").addEventListener("click",()=>$("#itemchecks").querySelectorAll("in
 $("#resetBtn").addEventListener("click",()=>{
   $("#step-filter").classList.add("hide"); $("#step-upload").classList.remove("hide");
   filesInput.value=""; renderFiles(); clrErr();
+});
+
+$("#genPresetBtn").addEventListener("click", async ()=>{
+  clrErr();
+  const btn=$("#genPresetBtn");
+  btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Building…';
+  try{
+    const res=await fetch("/generate_preset",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({token:TOKEN, preset_id:$("#presetSel").value})});
+    if(!res.ok){ const e=await res.json(); throw new Error(e.error||"Generate failed"); }
+    const blob=await res.blob();
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+    a.download="bill_statement_full.xlsx"; a.click(); URL.revokeObjectURL(a.href);
+  }catch(e){ showErr(e.message); }
+  btn.disabled=false; btn.textContent="Generate full workbook";
 });
 
 genBtn.addEventListener("click", async ()=>{
