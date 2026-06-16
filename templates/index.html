@@ -56,6 +56,8 @@
     <div id="step-filter" class="hide">
       <div class="chips" id="billchips"></div>
 
+      <button class="btn ghost" id="rawBtn" style="margin-bottom:4px">Download full PDF extract (as-is)</button>
+
       <div class="section" id="presetBox">
         <label class="h">Full preset workbook <span style="font-weight:400;color:var(--muted)">(all sheets in one file)</span></label>
         <select id="presetSel"></select>
@@ -118,17 +120,40 @@ function renderFiles(){
 
 analyzeBtn.addEventListener("click", async ()=>{
   clrErr();
-  analyzeBtn.disabled=true; analyzeBtn.innerHTML='<span class="spinner"></span>Reading bills…';
+  analyzeBtn.disabled=true; analyzeBtn.innerHTML='<span class="spinner"></span>Uploading…';
   const fd=new FormData();
   [...filesInput.files].forEach(f=>fd.append("pdfs",f));
   try{
     const res=await fetch("/analyze",{method:"POST",body:fd});
     const data=await res.json();
-    if(!res.ok) throw new Error(data.error||"Analyze failed");
-    buildFilter(data);
-  }catch(e){ showErr(e.message); }
-  analyzeBtn.disabled=false; analyzeBtn.textContent="Analyze bills";
+    if(!res.ok) throw new Error(data.error||"Upload failed");
+    await pollStatus(data.token, data.total);
+  }catch(e){ showErr(e.message); analyzeBtn.disabled=false; analyzeBtn.textContent="Analyze bills"; }
 });
+
+function pollStatus(token, total){
+  return new Promise((resolve,reject)=>{
+    const tick=async ()=>{
+      try{
+        const r=await fetch("/status/"+token);
+        const s=await r.json();
+        if(s.status==="processing"){
+          analyzeBtn.innerHTML=`<span class="spinner"></span>Reading bill ${s.done||0} of ${s.total||total}…`;
+          setTimeout(tick, 1500);
+        } else if(s.status==="done"){
+          analyzeBtn.disabled=false; analyzeBtn.textContent="Analyze bills";
+          buildFilter(s.result); resolve();
+        } else {
+          throw new Error(s.error||"Parsing failed");
+        }
+      }catch(e){
+        analyzeBtn.disabled=false; analyzeBtn.textContent="Analyze bills";
+        showErr(e.message); reject(e);
+      }
+    };
+    tick();
+  });
+}
 
 function buildFilter(d){
   TOKEN=d.token; CA=d.ca_no; ITEMS=d.items;
@@ -182,6 +207,21 @@ $("#selNone").addEventListener("click",()=>$("#itemchecks").querySelectorAll("in
 $("#resetBtn").addEventListener("click",()=>{
   $("#step-filter").classList.add("hide"); $("#step-upload").classList.remove("hide");
   filesInput.value=""; renderFiles(); clrErr();
+});
+
+$("#rawBtn").addEventListener("click", async ()=>{
+  clrErr();
+  const btn=$("#rawBtn");
+  btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Building…';
+  try{
+    const res=await fetch("/generate_raw",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({token:TOKEN})});
+    if(!res.ok){ const e=await res.json(); throw new Error(e.error||"Extract failed"); }
+    const blob=await res.blob();
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+    a.download="bills_full_extract.xlsx"; a.click(); URL.revokeObjectURL(a.href);
+  }catch(e){ showErr(e.message); }
+  btn.disabled=false; btn.textContent="Download full PDF extract (as-is)";
 });
 
 $("#genPresetBtn").addEventListener("click", async ()=>{

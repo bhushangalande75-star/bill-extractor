@@ -5,6 +5,7 @@ The financial numbers are read directly from the PDF tables with pdfplumber.
 No AI / LLM touches the amounts, so figures cannot be hallucinated.
 """
 import re
+import html
 import pdfplumber
 
 # Column index -> human name, based on the standard CR/BSL item-wise bill layout.
@@ -48,6 +49,15 @@ def _to_float(raw):
         return float(s)
     except ValueError:
         return None
+
+
+def _cellnum(raw):
+    """Parse a cell as a number; if not numeric, return cleaned text (or None)."""
+    f = _to_float(raw)
+    if f is not None:
+        return f
+    s = (raw or "").replace("\n", " ").strip() if isinstance(raw, str) else ""
+    return s or None
 
 
 def _is_schedule_header(joined):
@@ -139,6 +149,21 @@ def extract_rows(filepath):
                             "unit": (r[UNIT_COL] or "").replace("\n", " ").strip(),
                             "description": "",
                             "values": values,
+                            "full": {
+                                "sr_no": (r[0] or "").replace("\n", " ").strip() if r[0] else "",
+                                "base_rate": _cellnum(r[3]),
+                                "agmt_rate": _cellnum(r[4]),
+                                "orig_qty": _cellnum(r[5]),
+                                "curr_qty": _cellnum(r[6]),
+                                "qty_upto_last": _cellnum(r[7]),
+                                "qty_since_last": _cellnum(r[8]),
+                                "qty_upto_date": _cellnum(r[9]),
+                                "amt_upto_last": _to_float(r[10]),
+                                "amt_since_last": _to_float(r[11]),
+                                "amt_incl_spec": _to_float(r[12]),
+                                "total_upto_date": _to_float(r[13]),
+                                "remarks": (r[14] or "").replace("\n", " ").strip() if len(r) > 14 and r[14] else "",
+                            },
                         }
                         rows.append(row)
                         last_item_row = row
@@ -148,6 +173,12 @@ def extract_rows(filepath):
                         if last_item_row is not None and isinstance(desc, str) and desc.strip():
                             if not last_item_row["description"]:
                                 last_item_row["description"] = desc.replace("\n", " ").strip()
+
+    for row in rows:
+        if row["description"]:
+            row["description"] = html.unescape(row["description"])
+        if row["full"].get("remarks"):
+            row["full"]["remarks"] = html.unescape(row["full"]["remarks"])
 
     result = dict(meta)
     result["rows"] = rows

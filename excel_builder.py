@@ -330,3 +330,66 @@ def build_preset_workbook(parsed_bills, preset):
     wb.save(buf)
     buf.seek(0)
     return buf
+
+
+# ----------------------------------------------------------------------------
+# Raw "as-is" full extract — every column and row of the bill, one sheet per bill
+# ----------------------------------------------------------------------------
+RAW_HEADERS = ["Schedule", "Sr", "Item No", "Unit", "Description",
+               "Base Rate", "Agmt Rate", "Orig Agmt Qty", "Curr Agmt Qty",
+               "Qty upto last", "Qty since last", "Qty upto date",
+               "Amt upto last", "Amt since last", "Amt incl spec",
+               "Total upto date", "Remarks"]
+RAW_WIDTHS = [10, 5, 11, 8, 44, 11, 11, 12, 12, 12, 12, 12, 13, 13, 14, 14, 16]
+
+
+def build_raw_workbook(parsed_bills):
+    """Faithful dump: one sheet per bill with every item row and every column."""
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    ws0 = wb.create_sheet("Bills")
+    _write_bill_summary(ws0, parsed_bills)
+
+    used = {"Bills"}
+    for b in sorted(parsed_bills, key=_bill_sort_key):
+        base = (b.get("bill_no") or "Bill")[:28]
+        name, i = base, 2
+        while name in used:
+            name = f"{base}_{i}"
+            i += 1
+        used.add(name)
+        ws = wb.create_sheet(name)
+
+        info = (f"{b.get('ca_no') or ''}   |   Bill {b.get('bill_no') or ''}   |   "
+                f"Meas {b.get('meas_from') or '-'} to {b.get('meas_to') or '-'}   |   "
+                f"Bill amount {b.get('bill_amount') if b.get('bill_amount') is not None else '-'}")
+        ws.cell(1, 1, info).font = Font(italic=True, size=10, color="555555")
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(RAW_HEADERS))
+
+        for c, h in enumerate(RAW_HEADERS, start=1):
+            _hdr_cell(ws, 3, c, h)
+
+        r = 4
+        for row in b["rows"]:
+            f = row["full"]
+            vals = [row["schedule"], f["sr_no"], row["item"], row["unit"], row["description"],
+                    f["base_rate"], f["agmt_rate"], f["orig_qty"], f["curr_qty"],
+                    f["qty_upto_last"], f["qty_since_last"], f["qty_upto_date"],
+                    f["amt_upto_last"], f["amt_since_last"], f["amt_incl_spec"],
+                    f["total_upto_date"], f["remarks"]]
+            for c, v in enumerate(vals, start=1):
+                cell = ws.cell(r, c, v if v is not None else "")
+                cell.border = BORDER
+                if c >= 6 and isinstance(v, (int, float)):
+                    cell.alignment = Alignment(horizontal="right")
+            r += 1
+
+        for c, w in enumerate(RAW_WIDTHS, start=1):
+            ws.column_dimensions[get_column_letter(c)].width = w
+        ws.freeze_panes = "A4"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf

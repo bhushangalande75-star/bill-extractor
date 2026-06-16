@@ -70,9 +70,14 @@ Render sets `$PORT` automatically; `gunicorn app:app` binds to it.
 
 - Built and verified against CR/BSL item-wise bills (15-column table layout).
   Item numbers like `0330 62` are normalised to `033062` automatically.
-- The session store is in-memory (single process). For many concurrent users,
-  move it to Redis or a token-keyed disk store.
-- On Render free tier the service sleeps when idle and the first request after
-  sleep is slow — normal for free plans.
-- Always spot-check a couple of figures against the bill before filing, as a
-  matter of habit.
+- Bills are parsed in a background thread; the browser polls `/status/<token>`
+  and shows progress, so uploading many bills at once never times out.
+- Jobs (parsed data + temp files) are held in memory per process and expire
+  after 45 minutes. This is fine for a single instance. For multi-instance /
+  high-traffic commercial use, move the job store to Redis and the uploaded
+  files to object storage (S3/GCS), and run parsing on a real task queue
+  (Celery or RQ) instead of a thread.
+- On Render free tier the service sleeps when idle and the CPU is shared, so a
+  large batch is slow. A paid instance (more CPU/RAM) is the practical choice
+  once multiple users rely on it.
+- Always spot-check a couple of figures against the bill before filing.
