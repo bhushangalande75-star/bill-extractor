@@ -121,6 +121,13 @@
         <div id="promptVars"></div>
       </div>
 
+      <div class="section">
+        <label class="h">Additional instructions <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+        <textarea id="extraInstr" rows="3" placeholder="e.g. Only include schedules 101 and 201. Treat blank cells as 0. Use the 'Total Up to Date Amount' column instead."
+          style="width:100%;font-size:13px;padding:8px;border:1px solid #ddd;border-radius:6px"></textarea>
+        <p style="font-size:12px;color:var(--muted);margin-top:4px">These notes are added to the prompt sent to the AI model.</p>
+      </div>
+
       <button class="btn" id="submitPromptBtn">Submit to AI extraction</button>
       <button class="btn ghost" id="backFromPromptBtn">Back</button>
     </div>
@@ -143,7 +150,7 @@
     </div>
 
     <div id="err" class="err hide"></div>
-    <p class="note">Build v3 · AI prompt (Claude / Groq) enabled — Tip: a “preset” is just your saved selection — value column +
+    <p class="note">Build v4 · AI prompt + extra instructions enabled — Tip: a “preset” is just your saved selection — value column +
        item list. Re-use it next quarter by picking the same items.</p>
   </section>
 </div>
@@ -372,6 +379,7 @@ if($("#submitPromptBtn")) $("#submitPromptBtn").addEventListener("click", async 
   [...filesInput.files].forEach(f=>fd.append("pdfs",f));
   fd.append("prompt_id", $("#promptSel").value);
   fd.append("provider", $("#providerSel").value);
+  fd.append("extra_instructions", $("#extraInstr") ? $("#extraInstr").value : "");
   $("#promptVars").querySelectorAll("textarea").forEach(ta=>{
     fd.append(ta.id.replace("var_",""), ta.value);
   });

@@ -265,11 +265,16 @@ def extract_with_prompt():
     if not t:
         return jsonify({"error": "Unknown prompt template."}), 400
     
-    overrides = {k: v for k, v in payload.items() 
-                 if k not in ("prompt_id", "csrftoken")}
+    overrides = {k: v for k, v in payload.items()
+                 if k not in ("prompt_id", "csrftoken", "provider", "extra_instructions")}
     prompt = render_prompt(payload.get("prompt_id"), **overrides)
     if not prompt:
         return jsonify({"error": "Could not render the prompt."}), 400
+
+    extra = (payload.get("extra_instructions") or "").strip()
+    if extra:
+        prompt += ("\n\nADDITIONAL INSTRUCTIONS (apply these on top of the above, "
+                   "but still return only the JSON described):\n" + extra)
 
     JOBS[token] = {"status": "processing", "total": len(saved), "done": 0,
                    "groq_data": None, "error": None,
