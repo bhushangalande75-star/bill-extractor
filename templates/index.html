@@ -52,7 +52,15 @@
       <button class="btn" id="analyzeBtn" disabled>Analyze bills</button>
     </div>
 
-    <!-- step 2: filter (revealed after analyze) -->
+    <!-- step 2: choice (revealed after analyze) -->
+    <div id="step-choice" class="hide">
+      <div class="chips" id="billchips"></div>
+      <p style="color:var(--muted);font-size:14px;margin:16px 0">Choose how to extract data:</p>
+      <button class="btn" id="useFilterBtn" style="margin-bottom:8px">Use filters (traditional)</button>
+      <button class="btn teal" id="usePromptBtn">Use AI prompt (Groq/Llama)</button>
+    </div>
+
+    <!-- step 2a: traditional filter -->
     <div id="step-filter" class="hide">
       <div class="chips" id="billchips"></div>
 
@@ -87,6 +95,51 @@
 
       <button class="btn" id="genBtn">Generate Excel statement</button>
       <button class="btn ghost" id="resetBtn">Upload different bills</button>
+    </div>
+
+    <!-- step 2b: groq prompt -->
+    <div id="step-groq" class="hide">
+      <div class="chips" id="billchips2"></div>
+
+      <div class="section">
+        <label class="h">AI model</label>
+        <select id="providerSel">
+          <option value="claude">Claude (Anthropic)</option>
+          <option value="groq">Llama (Groq)</option>
+        </select>
+        <p style="font-size:12px;color:var(--muted);margin-top:6px" id="providerNote"></p>
+      </div>
+
+      <div class="section">
+        <label class="h">Select a prompt template</label>
+        <select id="promptSel"></select>
+        <p style="font-size:13px;color:var(--muted);margin-top:8px" id="promptDesc"></p>
+      </div>
+
+      <div class="section" id="promptVarBox" style="display:none">
+        <label class="h">Customize variables (optional)</label>
+        <div id="promptVars"></div>
+      </div>
+
+      <button class="btn" id="submitPromptBtn">Submit to AI extraction</button>
+      <button class="btn ghost" id="backFromPromptBtn">Back</button>
+    </div>
+
+    <!-- step 3: groq results polling -->
+    <div id="step-groq-processing" class="hide">
+      <div class="spinner-container" style="text-align:center;padding:40px">
+        <div class="spinner"></div>
+        <p id="groqMsg">Processing your bills with AI...</p>
+      </div>
+    </div>
+
+    <!-- step 4: groq done -->
+    <div id="step-groq-done" class="hide">
+      <div class="alert" style="background:var(--green);color:white;padding:12px;border-radius:4px;margin-bottom:16px">
+        ✓ Extraction complete! Download your Excel file.
+      </div>
+      <button class="btn" id="dlGroqBtn">Download Excel</button>
+      <button class="btn ghost" id="resetFromGroqBtn">Upload different bills</button>
     </div>
 
     <div id="err" class="err hide"></div>
@@ -142,7 +195,7 @@ function pollStatus(token, total){
           setTimeout(tick, 1500);
         } else if(s.status==="done"){
           analyzeBtn.disabled=false; analyzeBtn.textContent="Analyze bills";
-          buildFilter(s.result); resolve();
+          buildChoice(s.result); resolve();
         } else {
           throw new Error(s.error||"Parsing failed");
         }
@@ -157,8 +210,7 @@ function pollStatus(token, total){
 
 function buildFilter(d){
   TOKEN=d.token; CA=d.ca_no; ITEMS=d.items;
-  $("#step-upload").classList.add("hide");
-  $("#step-filter").classList.remove("hide");
+  showStep("step-filter");
 
   // presets
   fetch("/presets").then(r=>r.json()).then(p=>{
@@ -254,6 +306,113 @@ genBtn.addEventListener("click", async ()=>{
     a.download="bill_wise_statement.xlsx"; a.click(); URL.revokeObjectURL(a.href);
   }catch(e){ showErr(e.message); }
   genBtn.disabled=false; genBtn.textContent="Generate Excel statement";
+});
+/* ===== AI prompt (Claude / Groq) flow ===== */
+function showStep(id){
+  ["step-upload","step-choice","step-filter","step-groq","step-groq-processing","step-groq-done"]
+    .forEach(s=>{ const el=$("#"+s); if(el) el.classList.toggle("hide", s!==id); });
+}
+let GTOKEN=null, PROMPTS=[];
+
+// after analyze, offer the choice screen
+function buildChoice(d){
+  TOKEN=d.token; CA=d.ca_no; ITEMS=d.items; window._lastSummary=d;
+  showStep("step-choice");
+  const bc=$("#billchips"); if(bc){ bc.innerHTML="";
+    d.bills.forEach(b=>{ const c=document.createElement("span"); c.className="chip";
+      c.textContent=`${b.bill_no} · ${b.file}`; bc.appendChild(c); }); }
+}
+if($("#useFilterBtn")) $("#useFilterBtn").addEventListener("click",()=>{ showStep("step-filter"); buildFilter(window._lastSummary); });
+if($("#usePromptBtn")) $("#usePromptBtn").addEventListener("click",()=>{ showStep("step-groq"); initPrompt(); });
+if($("#backFromPromptBtn")) $("#backFromPromptBtn").addEventListener("click",()=>showStep("step-choice"));
+
+function initPrompt(){
+  // which providers are configured?
+  fetch("/providers").then(r=>r.json()).then(p=>{
+    const avail=p.providers||[]; const sel=$("#providerSel");
+    [...sel.options].forEach(o=>{ o.disabled=!avail.includes(o.value);
+      if(o.disabled) o.textContent+=" — no key set"; });
+    const firstOk=[...sel.options].find(o=>!o.disabled);
+    if(firstOk) sel.value=firstOk.value;
+    $("#providerNote").textContent = avail.length
+      ? "Reads the bill PDFs and returns the data for your prompt."
+      : "No API key configured. Set ANTHROPIC_API_KEY or GROQ_API_KEY in the server environment.";
+  }).catch(()=>{});
+  // load prompt templates
+  fetch("/prompts").then(r=>r.json()).then(p=>{
+    PROMPTS=p.prompts||[]; const sel=$("#promptSel"); sel.innerHTML="";
+    PROMPTS.forEach(t=>{ const o=document.createElement("option"); o.value=t.id; o.textContent=t.name; sel.appendChild(o); });
+    loadPromptDetails();
+  });
+}
+if($("#promptSel")) $("#promptSel").addEventListener("change", loadPromptDetails);
+
+function loadPromptDetails(){
+  const id=$("#promptSel").value; if(!id) return;
+  fetch("/prompt_details/"+id).then(r=>r.json()).then(t=>{
+    $("#promptDesc").textContent=t.description||"";
+    const vbox=$("#promptVars"), box=$("#promptVarBox"); vbox.innerHTML="";
+    const vars=t.variables||{};
+    const keys=Object.keys(vars);
+    box.style.display = keys.length? "block":"none";
+    keys.forEach(k=>{
+      const wrap=document.createElement("div"); wrap.style.marginBottom="8px";
+      const lab=document.createElement("label"); lab.textContent=k; lab.style.cssText="font-size:12px;color:var(--muted);display:block;margin-bottom:3px";
+      const ta=document.createElement("textarea"); ta.id="var_"+k; ta.value=vars[k];
+      ta.rows = String(vars[k]).length>40?3:1;
+      ta.style.cssText="width:100%;font-size:13px;padding:6px;border:1px solid #ddd;border-radius:6px";
+      wrap.appendChild(lab); wrap.appendChild(ta); vbox.appendChild(wrap);
+    });
+  });
+}
+
+if($("#submitPromptBtn")) $("#submitPromptBtn").addEventListener("click", async ()=>{
+  clrErr();
+  const fd=new FormData();
+  [...filesInput.files].forEach(f=>fd.append("pdfs",f));
+  fd.append("prompt_id", $("#promptSel").value);
+  fd.append("provider", $("#providerSel").value);
+  $("#promptVars").querySelectorAll("textarea").forEach(ta=>{
+    fd.append(ta.id.replace("var_",""), ta.value);
+  });
+  showStep("step-groq-processing");
+  $("#groqMsg").textContent="Sending bills to "+($("#providerSel").value==="claude"?"Claude":"Llama")+"…";
+  try{
+    const res=await fetch("/extract_with_prompt",{method:"POST",body:fd});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||"Submit failed");
+    GTOKEN=data.token; pollGroq();
+  }catch(e){ showErr(e.message); showStep("step-groq"); }
+});
+
+function pollGroq(){
+  const tick=async ()=>{
+    try{
+      const r=await fetch("/groq_status/"+GTOKEN); const s=await r.json();
+      if(s.status==="processing"){ $("#groqMsg").textContent="AI is reading the bills…"; setTimeout(tick,2000); }
+      else if(s.status==="done"){ showStep("step-groq-done"); }
+      else { throw new Error(s.error||"Extraction failed"); }
+    }catch(e){ showErr(e.message); showStep("step-groq"); }
+  };
+  tick();
+}
+
+if($("#dlGroqBtn")) $("#dlGroqBtn").addEventListener("click", async ()=>{
+  clrErr(); const btn=$("#dlGroqBtn");
+  btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Building…';
+  try{
+    const res=await fetch("/generate_from_groq",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({token:GTOKEN})});
+    if(!res.ok){ const e=await res.json(); throw new Error(e.error||"Build failed"); }
+    const blob=await res.blob();
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+    a.download="extracted_statement.xlsx"; a.click(); URL.revokeObjectURL(a.href);
+  }catch(e){ showErr(e.message); }
+  btn.disabled=false; btn.textContent="Download Excel";
+});
+
+if($("#resetFromGroqBtn")) $("#resetFromGroqBtn").addEventListener("click",()=>{
+  showStep("step-upload"); filesInput.value=""; renderFiles(); clrErr();
 });
 </script>
 </body>

@@ -27,6 +27,8 @@ from werkzeug.exceptions import HTTPException
 from extractor import summarize, extract_rows
 from excel_builder import build_workbook, build_preset_workbook, build_raw_workbook
 from presets import list_presets, get_preset
+from prompt_templates import list_templates, get_template, render_prompt
+from llm_extractor import extract_bills_with_prompt, available_providers
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024   # 200 MB (10+ bills at once)
@@ -71,6 +73,24 @@ def _save_uploads(files):
         f.save(path)
         saved.append((path, name))
     return token, d, saved
+
+
+def _groq_job(token, saved_pdfs, prompt, provider="claude"):
+    """Background LLM extraction job (Claude or Groq)."""
+    pdf_paths = [path for path, _ in saved_pdfs]
+    try:
+        success, data = extract_bills_with_prompt(pdf_paths, prompt, provider=provider)
+        with _LOCK:
+            if success:
+                JOBS[token]["groq_data"] = data
+                JOBS[token]["status"] = "done"
+            else:
+                JOBS[token]["status"] = "error"
+                JOBS[token]["error"] = data  # data is error message if not success
+    except Exception as e:
+        with _LOCK:
+            JOBS[token]["status"] = "error"
+            JOBS[token]["error"] = str(e)
 
 
 def _parse_job(token, saved):
@@ -209,6 +229,96 @@ def generate_raw():
         buf,
         as_attachment=True,
         download_name="bills_full_extract.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.route("/prompts")
+def prompts():
+    return jsonify({"prompts": list_templates()})
+
+
+@app.route("/prompt_details/<prompt_id>")
+def prompt_details(prompt_id):
+    t = get_template(prompt_id)
+    if not t:
+        return jsonify({"error": "Unknown prompt template."}), 404
+    return jsonify(t)
+
+
+@app.route("/extract_with_prompt", methods=["POST"])
+def extract_with_prompt():
+    """Start a Groq extraction job in background."""
+    _cleanup_jobs()
+    files = request.files.getlist("pdfs")
+    payload = request.form.to_dict()
+    
+    if not files or not payload.get("prompt_id"):
+        return jsonify({"error": "No PDFs or prompt template selected."}), 400
+
+    token, d, saved = _save_uploads(files)
+    if not saved:
+        return jsonify({"error": "No valid .pdf files in the upload."}), 400
+
+    # Render the prompt template with any variable overrides from the form
+    t = get_template(payload.get("prompt_id"))
+    if not t:
+        return jsonify({"error": "Unknown prompt template."}), 400
+    
+    overrides = {k: v for k, v in payload.items() 
+                 if k not in ("prompt_id", "csrftoken")}
+    prompt = render_prompt(payload.get("prompt_id"), **overrides)
+    if not prompt:
+        return jsonify({"error": "Could not render the prompt."}), 400
+
+    JOBS[token] = {"status": "processing", "total": len(saved), "done": 0,
+                   "groq_data": None, "error": None,
+                   "dir": d, "ts": time.time(), "prompt_id": payload.get("prompt_id")}
+    provider = (payload.get("provider") or "claude").lower()
+    threading.Thread(target=_groq_job, args=(token, saved, prompt, provider), daemon=True).start()
+    return jsonify({"token": token, "status": "processing", "total": len(saved)})
+
+
+@app.route("/providers")
+def providers():
+    """Which LLM providers have a key configured."""
+    return jsonify({"providers": available_providers()})
+
+
+@app.route("/groq_status/<token>")
+def groq_status(token):
+    job = JOBS.get(token)
+    if not job:
+        return jsonify({"error": "Unknown or expired job."}), 404
+    if job["status"] == "done":
+        return jsonify({"status": "done", "data": job.get("groq_data")})
+    if job["status"] == "error":
+        return jsonify({"status": "error", "error": job.get("error", "Unknown error")}), 500
+    return jsonify({"status": "processing", "done": job["done"], "total": job["total"]})
+
+
+@app.route("/generate_from_groq", methods=["POST"])
+def generate_from_groq():
+    payload = request.get_json(silent=True) or {}
+    job = JOBS.get(payload.get("token"))
+    if not job or job["status"] != "done":
+        return jsonify({"error": "Job not ready or expired."}), 400
+    
+    prompt_id = job.get("prompt_id")
+    template = get_template(prompt_id)
+    if not template:
+        return jsonify({"error": "Template not found."}), 400
+    
+    try:
+        from groq_to_excel import groq_json_to_excel
+        buf = groq_json_to_excel(job.get("groq_data", {}), template)
+    except Exception as e:
+        return jsonify({"error": f"Failed to build Excel: {e}"}), 500
+    
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name=f"{template['output_format'].replace(' ', '_')}.xlsx",
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
