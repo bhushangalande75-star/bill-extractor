@@ -54,7 +54,7 @@
 
     <!-- step 2: choice (revealed after analyze) -->
     <div id="step-choice" class="hide">
-      <div class="chips" id="billchips"></div>
+      <div class="chips" id="billchips_choice"></div>
       <p style="color:var(--muted);font-size:14px;margin:16px 0">Choose how to extract data:</p>
       <button class="btn" id="useFilterBtn" style="margin-bottom:8px">Use filters (traditional)</button>
       <button class="btn teal" id="usePromptBtn">Use AI prompt (Groq/Llama)</button>
@@ -143,7 +143,7 @@
     </div>
 
     <div id="err" class="err hide"></div>
-    <p class="note">Tip: a “preset” is just your saved selection — value column +
+    <p class="note">Build v3 · AI prompt (Claude / Groq) enabled — Tip: a “preset” is just your saved selection — value column +
        item list. Re-use it next quarter by picking the same items.</p>
   </section>
 </div>
@@ -318,7 +318,7 @@ let GTOKEN=null, PROMPTS=[];
 function buildChoice(d){
   TOKEN=d.token; CA=d.ca_no; ITEMS=d.items; window._lastSummary=d;
   showStep("step-choice");
-  const bc=$("#billchips"); if(bc){ bc.innerHTML="";
+  const bc=$("#billchips_choice"); if(bc){ bc.innerHTML="";
     d.bills.forEach(b=>{ const c=document.createElement("span"); c.className="chip";
       c.textContent=`${b.bill_no} · ${b.file}`; bc.appendChild(c); }); }
 }
