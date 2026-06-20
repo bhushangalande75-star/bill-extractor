@@ -26,6 +26,42 @@ SYSTEM_MSG = (
     "be plain numbers (no commas, no currency symbols)."
 )
 
+# Lines worth keeping even when they don't contain a target item number.
+_HEADER_RE = re.compile(
+    r"Bill No|Measurement Date|Bill Date|Agreement No|Bill Amount|Total Amount|"
+    r"Schedule|Amount Since|Amount up to|Item No|Description",
+    re.IGNORECASE,
+)
+
+
+def _item_targets(prompt):
+    """Item numbers referenced in the prompt: 6-digit codes and decimal codes."""
+    codes = set(re.findall(r"\b\d{5,6}\b", prompt))
+    codes |= set(re.findall(r"\b\d{1,3}(?:\.\d{1,3}){1,3}\b", prompt))
+    return codes
+
+
+def _shrink(text, targets):
+    """Keep only header/schedule lines and lines mentioning a target item.
+    Cuts a multi-page bill down to the handful of rows the prompt needs."""
+    keep = []
+    for line in text.split("\n"):
+        s = line.strip()
+        if not s:
+            continue
+        if targets and any(t in line for t in targets):
+            keep.append(s)
+        elif _HEADER_RE.search(s):
+            keep.append(s)
+    # if filtering removed everything (unrecognised layout), fall back to capped raw
+    if not keep:
+        return text[:6000]
+    return "\n".join(keep)
+
+
+def _est_tokens(text):
+    return len(text) // 4   # rough 4 chars/token
+
 
 def available_providers():
     """Which providers have a usable key right now."""
@@ -112,13 +148,16 @@ def extract_bills_with_prompt(pdf_paths, prompt, provider="claude", bill_labels=
     if provider not in avail:
         provider = avail[0]  # graceful fallback to whatever is configured
 
-    # Read bills into text
+    # Read bills into text, then shrink to only the rows the prompt needs so
+    # the request fits within free-tier token-per-minute limits.
+    targets = _item_targets(prompt)
     bill_texts = {}
     for i, path in enumerate(pdf_paths):
         label = (bill_labels or {}).get(path) if bill_labels else None
         label = label or f"B{i+1}"
         try:
-            bill_texts[label] = pdf_to_text(path)
+            full = pdf_to_text(path)
+            bill_texts[label] = _shrink(full, targets)
         except Exception as e:
             return False, f"Failed to read {os.path.basename(path)}: {e}"
 
@@ -126,6 +165,12 @@ def extract_bills_with_prompt(pdf_paths, prompt, provider="claude", bill_labels=
         f"--- {label} ---\n{text}" for label, text in sorted(bill_texts.items())
     )
     user_msg = f"{prompt}\n\nBILLS DATA:\n{bills_context}"
+
+    # Guard against still being too large for a free tier.
+    if _est_tokens(user_msg) > 11000:
+        return False, (f"The selected bills are still too large (~{_est_tokens(user_msg)} "
+                       "tokens) for the free tier even after trimming. Use the 'Use filters' "
+                       "path (no token limit), pick fewer bills, or upgrade the API tier.")
 
     try:
         if provider == "claude":

@@ -61,16 +61,20 @@ def _cellnum(raw):
 
 
 def _is_schedule_header(joined):
-    """Distinguish a real schedule header row from anything else."""
-    if "Total (" in joined:          # this is a schedule total row, not a header
+    """Distinguish a real schedule header row from item rows and summary rows.
+
+    A header band starts with 'Schedule NNN' and carries no monetary data.
+    Item rows never start with 'Schedule'; the end-of-bill 'Schedule Summary'
+    rows start with 'Schedule NNN' but are followed by several amounts."""
+    j = joined.strip()
+    if "Total (" in j:                       # schedule total row, not a header
         return None
-    m = _SCHED_RE.search(joined)
+    m = re.match(r"Schedule\s+(\d{2,3})\b", j)
     if not m:
         return None
-    if any(k in joined for k in ("Repair", "Bhusawal", "Improvement", "Improvemnt",
-                                 "facilitated", "PF surface")):
-        return m.group(1)
-    return None
+    if len(re.findall(r"\d+\.\d+", j)) >= 2:  # e.g. summary row with amounts
+        return None
+    return m.group(1)
 
 
 def _read_meta(pdf):
