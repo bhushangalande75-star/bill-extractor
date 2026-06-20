@@ -55,9 +55,20 @@
     <!-- step 2: choice (revealed after analyze) -->
     <div id="step-choice" class="hide">
       <div class="chips" id="billchips_choice"></div>
-      <p style="color:var(--muted);font-size:14px;margin:16px 0">Choose how to extract data:</p>
-      <button class="btn" id="useFilterBtn" style="margin-bottom:8px">Use filters (traditional)</button>
-      <button class="btn teal" id="usePromptBtn">Use AI prompt (Groq/Llama)</button>
+
+      <div id="dataPreview" style="margin:14px 0"></div>
+
+      <div class="section">
+        <label class="h">Ask in plain English what you want</label>
+        <textarea id="nlRequest" rows="2" placeholder="e.g. all steel items in schedule 301 with totals  ·  item 033062 across all bills  ·  bill summary"
+          style="width:100%;font-size:14px;padding:9px;border:1px solid #ddd;border-radius:6px"></textarea>
+        <button class="btn teal" id="nlGoBtn" style="margin-top:8px">Get my Excel</button>
+        <p style="font-size:12px;color:var(--muted);margin-top:6px" id="nlNote"></p>
+      </div>
+
+      <p style="color:var(--muted);font-size:13px;margin:10px 0 4px">Or build it manually:</p>
+      <button class="btn" id="useFilterBtn" style="margin-bottom:8px">Use filters (pick items / schedules)</button>
+      <button class="btn ghost" id="usePromptBtn">Use a prompt template</button>
     </div>
 
     <!-- step 2a: traditional filter -->
@@ -150,7 +161,7 @@
     </div>
 
     <div id="err" class="err hide"></div>
-    <p class="note">Build v7 · built-in templates extract directly (no LLM token/JSON limits) — Tip: a “preset” is just your saved selection — value column +
+    <p class="note">Build v8 · extract-everything preview + plain-English request — Tip: a “preset” is just your saved selection — value column +
        item list. Re-use it next quarter by picking the same items.</p>
   </section>
 </div>
@@ -328,9 +339,80 @@ function buildChoice(d){
   const bc=$("#billchips_choice"); if(bc){ bc.innerHTML="";
     d.bills.forEach(b=>{ const c=document.createElement("span"); c.className="chip";
       c.textContent=`${b.bill_no} · ${b.file}`; bc.appendChild(c); }); }
+  renderPreview();
+}
+
+function fmt(v){ return (v===null||v===undefined||v==="")?"" : (typeof v==="number"? v.toLocaleString("en-IN",{maximumFractionDigits:2}) : v); }
+
+function renderPreview(){
+  const box=$("#dataPreview"); if(!box) return;
+  box.innerHTML="<p style='color:var(--muted);font-size:13px'>Loading extracted data…</p>";
+  fetch("/extracted_data/"+TOKEN).then(r=>r.json()).then(d=>{
+    if(d.error){ box.innerHTML="<p class='err'>"+d.error+"</p>"; return; }
+    let html="";
+    d.bills.forEach(b=>{
+      html += `<details style="margin-bottom:10px;border:1px solid #e3e3e3;border-radius:8px;overflow:hidden">
+        <summary style="cursor:pointer;padding:10px 12px;background:var(--card,#f5fbfa);font-weight:600">
+          ${b.bill_no||'Bill'} — ${b.row_count} items · ${b.schedules.length} schedules
+          <span style="font-weight:400;color:var(--muted)"> · ${b.meas_from||''}→${b.meas_to||''} · Bill amount ₹${fmt(b.bill_amount)}</span>
+        </summary>
+        <div style="max-height:340px;overflow:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="position:sticky;top:0;background:#eef6f5">
+            ${["Sch","Item","Unit","Description","Base Rate","Agmt Rate","Qty to date","Amt since (incl spl)","Total to date"]
+              .map(h=>`<th style="padding:5px 7px;text-align:left;border-bottom:1px solid #ddd;white-space:nowrap">${h}</th>`).join("")}
+          </tr></thead><tbody>`;
+      b.rows.forEach(r=>{
+        html += `<tr>
+          <td style="padding:4px 7px;border-bottom:1px solid #f0f0f0">${r.schedule||''}</td>
+          <td style="padding:4px 7px;border-bottom:1px solid #f0f0f0">${r.item}</td>
+          <td style="padding:4px 7px;border-bottom:1px solid #f0f0f0">${r.unit||''}</td>
+          <td style="padding:4px 7px;border-bottom:1px solid #f0f0f0;max-width:280px">${(r.description||'').slice(0,90)}</td>
+          <td style="padding:4px 7px;border-bottom:1px solid #f0f0f0;text-align:right">${fmt(r.base_rate)}</td>
+          <td style="padding:4px 7px;border-bottom:1px solid #f0f0f0;text-align:right">${fmt(r.agmt_rate)}</td>
+          <td style="padding:4px 7px;border-bottom:1px solid #f0f0f0;text-align:right">${fmt(r.qty_upto_date)}</td>
+          <td style="padding:4px 7px;border-bottom:1px solid #f0f0f0;text-align:right">${fmt(r.amt_since_incl_spec)}</td>
+          <td style="padding:4px 7px;border-bottom:1px solid #f0f0f0;text-align:right">${fmt(r.total_upto_date)}</td>
+        </tr>`;
+      });
+      html += "</tbody></table></div></details>";
+    });
+    box.innerHTML = `<p style="font-size:13px;color:var(--muted);margin-bottom:8px">Extracted everything from your bills. Expand any bill to see all items, or download the full extract below.</p>`
+      + html
+      + `<button class="btn ghost" id="dlFullBtn" style="margin-top:4px">Download full extract (Excel, all columns)</button>`;
+    const dl=$("#dlFullBtn"); if(dl) dl.addEventListener("click", downloadRaw);
+  }).catch(e=>{ box.innerHTML="<p class='err'>Could not load extracted data.</p>"; });
+}
+
+async function downloadRaw(){
+  const res=await fetch("/generate_raw",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:TOKEN})});
+  if(!res.ok) return;
+  const blob=await res.blob(); const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob); a.download="bills_full_extract.xlsx"; a.click(); URL.revokeObjectURL(a.href);
 }
 if($("#useFilterBtn")) $("#useFilterBtn").addEventListener("click",()=>{ showStep("step-filter"); buildFilter(window._lastSummary); });
 if($("#usePromptBtn")) $("#usePromptBtn").addEventListener("click",()=>{ showStep("step-groq"); initPrompt(); });
+if($("#nlGoBtn")) $("#nlGoBtn").addEventListener("click", async ()=>{
+  clrErr();
+  const req=$("#nlRequest").value.trim();
+  if(!req){ $("#nlNote").textContent="Type what you want first."; return; }
+  const btn=$("#nlGoBtn"); btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Working…';
+  $("#nlNote").textContent="Interpreting your request…";
+  try{
+    const res=await fetch("/nl_request",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({token:TOKEN, request:req})});
+    const d=await res.json();
+    if(d.error){ $("#nlNote").textContent=d.error; }
+    else if(d.status==="ok"){
+      const u=d.understood||{};
+      $("#nlNote").textContent=`Got ${u.rows} item(s) across schedules ${(u.schedules||[]).join(", ")} · column: ${u.value_column}. Downloading…`;
+      const dl=await fetch("/download_nl/"+TOKEN);
+      const blob=await dl.blob(); const a=document.createElement("a");
+      a.href=URL.createObjectURL(blob); a.download="statement.xlsx"; a.click(); URL.revokeObjectURL(a.href);
+    }
+  }catch(e){ $("#nlNote").textContent="Something went wrong: "+e.message; }
+  btn.disabled=false; btn.textContent="Get my Excel";
+});
 if($("#backFromPromptBtn")) $("#backFromPromptBtn").addEventListener("click",()=>showStep("step-choice"));
 
 function initPrompt(){

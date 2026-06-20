@@ -29,6 +29,7 @@ from excel_builder import build_workbook, build_preset_workbook, build_raw_workb
 from presets import list_presets, get_preset
 from prompt_templates import list_templates, get_template, render_prompt
 from llm_extractor import extract_bills_with_prompt, available_providers
+from nl_interpret import interpret_request
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024   # 200 MB (10+ bills at once)
@@ -211,6 +212,36 @@ def _ready_job(token):
     return job
 
 
+@app.route("/extracted_data/<token>")
+def extracted_data(token):
+    """Full extracted data in a plain-readable shape, one block per bill."""
+    job = _ready_job(token)
+    if not job:
+        return jsonify({"error": "Session expired or still processing. Re-upload."}), 400
+    bills = []
+    for b in sorted(job["parsed"], key=lambda x: _bill_key(x.get("bill_no"))):
+        rows = []
+        for r in b["rows"]:
+            f = r["full"]
+            rows.append({
+                "schedule": r["schedule"], "item": r["item"], "unit": r["unit"],
+                "description": r["description"],
+                "base_rate": f["base_rate"], "agmt_rate": f["agmt_rate"],
+                "qty_upto_date": f["qty_upto_date"],
+                "amt_upto_last": f["amt_upto_last"],
+                "amt_since_incl_spec": f["amt_incl_spec"],
+                "total_upto_date": f["total_upto_date"],
+            })
+        bills.append({
+            "bill_no": b.get("bill_no"), "meas_from": b.get("meas_from"),
+            "meas_to": b.get("meas_to"), "bill_date": b.get("bill_date"),
+            "bill_amount": b.get("bill_amount"),
+            "schedules": sorted({r["schedule"] for r in b["rows"] if r["schedule"]}),
+            "row_count": len(rows), "rows": rows,
+        })
+    return jsonify({"ca_no": job["summary"].get("ca_no"), "bills": bills})
+
+
 @app.route("/generate", methods=["POST"])
 def generate():
     payload = request.get_json(silent=True) or {}
@@ -266,6 +297,51 @@ def generate_preset():
         download_name="bill_statement_full.xlsx",
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+
+@app.route("/nl_request", methods=["POST"])
+def nl_request():
+    """Plain-English request -> the LLM returns only a small spec (which items,
+    schedules, column, totals); the numbers are then pulled deterministically
+    from the already-extracted bills. The model never sees the figures."""
+    payload = request.get_json(silent=True) or {}
+    job = _ready_job(payload.get("token"))
+    if not job:
+        return jsonify({"error": "Session expired or still processing. Re-upload."}), 400
+    req = (payload.get("request") or "").strip()
+    if not req:
+        return jsonify({"error": "Type what you want first."}), 400
+
+    parsed = job["parsed"]
+    # Build the catalogue (small) the model reasons over — never the amounts.
+    all_items = sorted({(r["schedule"], r["item"]) for b in parsed for r in b["rows"]})
+    catalogue = [{"schedule": s, "item": i,
+                  "description": next((r["description"][:60] for b in parsed
+                                       for r in b["rows"] if r["item"] == i and r["schedule"] == s), "")}
+                 for s, i in all_items]
+
+    spec, err = interpret_request(req, catalogue)
+    if err:
+        return jsonify({"error": err}), 200  # soft error, show to user
+    # Deterministic build from the spec
+    try:
+        from nl_build import build_from_spec
+        buf, info = build_from_spec(parsed, spec)
+    except Exception as e:
+        return jsonify({"error": f"Could not build from the request: {e}"}), 500
+    JOBS[payload["token"]]["nl_buf"] = buf.getvalue()
+    return jsonify({"status": "ok", "understood": info})
+
+
+@app.route("/download_nl/<token>")
+def download_nl(token):
+    job = _ready_job(token)
+    if not job or "nl_buf" not in job:
+        return jsonify({"error": "Nothing to download yet."}), 400
+    import io as _io
+    return send_file(_io.BytesIO(job["nl_buf"]), as_attachment=True,
+                     download_name="statement.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.route("/generate_raw", methods=["POST"])
