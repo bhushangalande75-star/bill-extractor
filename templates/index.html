@@ -150,7 +150,7 @@
     </div>
 
     <div id="err" class="err hide"></div>
-    <p class="note">Build v6 · schedule detection fixed (filters path works on all bills) — Tip: a “preset” is just your saved selection — value column +
+    <p class="note">Build v7 · built-in templates extract directly (no LLM token/JSON limits) — Tip: a “preset” is just your saved selection — value column +
        item list. Re-use it next quarter by picking the same items.</p>
   </section>
 </div>
@@ -342,8 +342,8 @@ function initPrompt(){
     const firstOk=[...sel.options].find(o=>!o.disabled);
     if(firstOk) sel.value=firstOk.value;
     $("#providerNote").textContent = avail.length
-      ? "Reads the bill PDFs and returns the data for your prompt."
-      : "No API key configured. Set ANTHROPIC_API_KEY or GROQ_API_KEY in the server environment.";
+      ? "The built-in templates read the bills directly (exact, no API key needed). A model is only used for custom free-form prompts."
+      : "The built-in templates read the bills directly — no API key needed.";
   }).catch(()=>{});
   // load prompt templates
   fetch("/prompts").then(r=>r.json()).then(p=>{

@@ -75,10 +75,63 @@ def _save_uploads(files):
     return token, d, saved
 
 
-def _groq_job(token, saved_pdfs, prompt, provider="claude"):
-    """Background LLM extraction job (Claude or Groq)."""
+import re as _re
+_VALUE_COL = "Amount Since last Bill including special condition"
+_STRUCTURED = {"bill_summary", "single_item_multi_bill",
+               "multi_item_multi_schedule", "schedule_items_with_total"}
+
+
+def _prompt_item_targets(prompt):
+    codes = set(_re.findall(r"\b\d{5,6}\b", prompt))
+    codes |= set(_re.findall(r"\b\d{1,3}(?:\.\d{1,3}){1,3}\b", prompt))
+    return codes
+
+
+def _deterministic_prompt_data(prompt_id, prompt, pdf_paths):
+    """Build the same JSON the LLM would, but straight from the parsed bills —
+    exact, free, no token limit. Used for the built-in structured templates."""
+    parsed = []
+    for p in pdf_paths:
+        pb = extract_rows(p)
+        parsed.append(pb)
+    parsed.sort(key=lambda b: _bill_key(b.get("bill_no")))
+
+    if prompt_id == "bill_summary":
+        bills = [{"bill_no": b.get("bill_no") or "?",
+                  "meas_start": b.get("meas_from"),
+                  "meas_end": b.get("meas_to"),
+                  "amount": b.get("bill_amount") or 0} for b in parsed]
+        return {"bills": bills}
+
+    # item templates: amount per (schedule, item) per bill
+    targets = _prompt_item_targets(prompt)
+    items = []
+    for b in parsed:
+        bn = b.get("bill_no") or "?"
+        for row in b["rows"]:
+            if row["item"] in targets:
+                amt = row["values"].get(_VALUE_COL)
+                items.append({"schedule": row["schedule"], "item_no": row["item"],
+                              "bill_no": bn, "amount": amt if amt is not None else 0})
+    return {"items": items}
+
+
+def _bill_key(bn):
+    m = _re.search(r"(\d+)", bn or "")
+    return int(m.group(1)) if m else 9999
+
+
+def _groq_job(token, saved_pdfs, prompt, provider="claude", prompt_id=None):
+    """Built-in structured templates are handled deterministically (exact, free,
+    no token limit). Only genuinely custom prompts go to the LLM."""
     pdf_paths = [path for path, _ in saved_pdfs]
     try:
+        if prompt_id in _STRUCTURED:
+            data = _deterministic_prompt_data(prompt_id, prompt, pdf_paths)
+            with _LOCK:
+                JOBS[token]["groq_data"] = data
+                JOBS[token]["status"] = "done"
+            return
         success, data = extract_bills_with_prompt(pdf_paths, prompt, provider=provider)
         with _LOCK:
             if success:
@@ -280,7 +333,8 @@ def extract_with_prompt():
                    "groq_data": None, "error": None,
                    "dir": d, "ts": time.time(), "prompt_id": payload.get("prompt_id")}
     provider = (payload.get("provider") or "claude").lower()
-    threading.Thread(target=_groq_job, args=(token, saved, prompt, provider), daemon=True).start()
+    threading.Thread(target=_groq_job, args=(token, saved, prompt, provider),
+                     kwargs={"prompt_id": payload.get("prompt_id")}, daemon=True).start()
     return jsonify({"token": token, "status": "processing", "total": len(saved)})
 
 
